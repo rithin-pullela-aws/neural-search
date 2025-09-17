@@ -250,7 +250,7 @@ public class NeuralSearch extends Plugin
 
     @Override
     public Map<String, Processor.Factory> getProcessors(Processor.Parameters parameters) {
-        clientAccessor = new MLCommonsClientAccessor(new MachineLearningNodeClient(parameters.client));
+        clientAccessor = new MLCommonsClientAccessor(new MachineLearningNodeClient(parameters.client), xContentRegistry);
         return Map.of(
             TextEmbeddingProcessor.TYPE,
             new TextEmbeddingProcessorFactory(

@@ -111,7 +111,7 @@ public class NeuralSparseQueryBuilder extends AbstractNeuralQueryBuilder<NeuralS
 
     private static final Version MINIMAL_SUPPORTED_VERSION_DEFAULT_MODEL_ID = Version.V_2_13_0;
     private static final Version MINIMAL_SUPPORTED_VERSION_ANALYZER = Version.V_3_1_0;
-    private static final Version MINIMAL_SUPPORTED_VERSION_SEISMIC = Version.V_3_3_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_SEISMIC = Version.V_3_2_0;
 
     /**
      * Constructor from stream input

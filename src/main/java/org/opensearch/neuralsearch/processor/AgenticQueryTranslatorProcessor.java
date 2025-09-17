@@ -109,13 +109,13 @@ public class AgenticQueryTranslatorProcessor extends AbstractProcessor implement
         ActionListener<SearchRequest> requestListener
     ) {
         Map<String, String> parameters = new HashMap<>();
-        parameters.put("query_text", agenticQuery.getQueryText());
+        parameters.put("question", agenticQuery.getQueryText());
 
         // Get index mapping from the search request
         if (request.indices() != null && request.indices().length > 0) {
             try {
                 Map<String, String> indexMappings = NeuralSearchClusterUtil.instance().getIndexMapping(request.indices());
-                parameters.put("index_mapping", indexMappings.toString());
+                parameters.put("index_mapping", gson.toJson(indexMappings.toString()));
             } catch (Exception e) {
                 log.warn("Failed to get index mapping", e);
             }
@@ -125,7 +125,10 @@ public class AgenticQueryTranslatorProcessor extends AbstractProcessor implement
             parameters.put("query_fields", gson.toJson(agenticQuery.getQueryFields()));
         }
 
-        mlClient.executeAgent(agentId, parameters, ActionListener.wrap(agentResponse -> {
+        // Use executeConversational directly for now
+        // TODO: When agent type detection is available, use executeAgent() instead
+        // which will automatically route to executeFlow() or executeConversational()
+        mlClient.executeConversational(agentId, parameters, ActionListener.wrap(agentResponse -> {
             try {
                 log.debug("Generated Query: [{}]", agentResponse);
 

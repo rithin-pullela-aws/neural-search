@@ -10,6 +10,7 @@ import static org.opensearch.neuralsearch.processor.TextImageEmbeddingProcessor.
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,18 +47,28 @@ import org.opensearch.neuralsearch.processor.TextInferenceRequest;
 import org.opensearch.neuralsearch.util.RetryUtil;
 import org.opensearch.ml.common.dataset.QuestionAnsweringInputDataSet;
 import org.opensearch.neuralsearch.processor.highlight.SentenceHighlightingRequest;
+import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.core.common.bytes.BytesArray;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentParser;
 
 import lombok.NonNull;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 
 /**
  * This class will act as an abstraction on the MLCommons client for accessing the ML Capabilities
  */
-@RequiredArgsConstructor
 @Log4j2
 public class MLCommonsClientAccessor {
-    private final MachineLearningNodeClient mlClient;
+    public final MachineLearningNodeClient mlClient;
+    private final NamedXContentRegistry xContentRegistry;
+
+    public MLCommonsClientAccessor(MachineLearningNodeClient mlClient, NamedXContentRegistry xContentRegistry) {
+        this.mlClient = mlClient;
+        this.xContentRegistry = xContentRegistry;
+    }
 
     /**
      * Wrapper around {@link #inferenceSentences} that expected a single input text and produces a single floating
@@ -216,7 +227,9 @@ public class MLCommonsClientAccessor {
         for (final ModelTensors tensors : tensorOutputList) {
             final List<ModelTensor> tensorsList = tensors.getMlModelTensors();
             for (final ModelTensor tensor : tensorsList) {
-                vector.add(Arrays.stream(tensor.getData()).map(value -> (T) value).collect(Collectors.toList()));
+                @SuppressWarnings("unchecked")
+                List<T> tensorData = Arrays.stream(tensor.getData()).map(value -> (T) value).collect(Collectors.toList());
+                vector.add(tensorData);
             }
         }
         return vector;
@@ -409,37 +422,60 @@ public class MLCommonsClientAccessor {
         );
     }
 
-    /**
-     * Retryable method to perform sentence highlighting inference.
-     * This method will retry up to 3 times if a retryable exception occurs.
-     */
-    private void retryableInferenceSentenceHighlighting(
-        final SentenceHighlightingRequest inferenceRequest,
+    private void retryableGetAgent(
+        @NonNull final String agentId,
         final int retryTime,
-        final ActionListener<List<Map<String, Object>>> listener
+        @NonNull final ActionListener<Map<String, Object>> listener
     ) {
-        try {
-            MLInputDataset inputDataset = new QuestionAnsweringInputDataSet(inferenceRequest.getQuestion(), inferenceRequest.getContext());
-            MLInput mlInput = new MLInput(FunctionName.QUESTION_ANSWERING, null, inputDataset);
+        // TODO: Update this method when MLAgentGetRequest and MLAgentGetAction become available
+        // The preferred implementation would be:
+        // MLAgentGetRequest mlAgentGetRequest = MLAgentGetRequest.builder()
+        // .agentId(agentId)
+        // .isUserInitiatedGetRequest(true)
+        // .tenantId(null) // Optional
+        // .build();
+        // mlClient.execute(MLAgentGetAction.INSTANCE, mlAgentGetRequest, ActionListener.wrap(response -> {
+        // MLAgent agent = response.getMlAgent();
+        // Map<String, Object> agentInfo = convertMLAgentToMap(agent);
+        // listener.onResponse(agentInfo);
+        // }, e -> RetryUtil.handleRetryOrFailure(e, retryTime, () -> retryableGetAgent(agentId, retryTime + 1, listener), listener)));
 
-            mlClient.predict(inferenceRequest.getModelId(), mlInput, ActionListener.wrap(mlOutput -> {
-                try {
-                    List<Map<String, Object>> result = processHighlightingOutput((ModelTensorOutput) mlOutput);
-                    listener.onResponse(result);
-                } catch (Exception e) {
-                    listener.onFailure(e);
-                }
-            },
-                e -> RetryUtil.handleRetryOrFailure(
-                    e,
-                    retryTime,
-                    () -> retryableInferenceSentenceHighlighting(inferenceRequest, retryTime + 1, listener),
-                    listener
-                )
-            ));
-        } catch (Exception e) {
-            listener.onFailure(e);
+        // For now, we'll use a generic approach that tries to get the agent as a model
+        // and then parse the response to extract agent information
+        mlClient.getModel(agentId, null, ActionListener.wrap(mlModel -> {
+            // Convert MLModel to a Map representation for agent type detection
+            Map<String, Object> agentInfo = convertMLModelToAgentInfo(mlModel);
+            listener.onResponse(agentInfo);
+        }, e -> RetryUtil.handleRetryOrFailure(e, retryTime, () -> retryableGetAgent(agentId, retryTime + 1, listener), listener)));
+    }
+
+    /**
+     * Convert MLModel to a Map representation for agent type detection.
+     * This is a temporary solution until MLAgentGetRequest is available.
+     *
+     * @param mlModel the ML model
+     * @return a map representation of the agent info
+     */
+    private Map<String, Object> convertMLModelToAgentInfo(MLModel mlModel) {
+        Map<String, Object> agentInfo = new HashMap<>();
+        agentInfo.put("name", mlModel.getName());
+
+        // Try to extract type information from model name or config
+        String modelName = mlModel.getName();
+        if (modelName != null) {
+            String lowerName = modelName.toLowerCase();
+            if (lowerName.contains("conversational") || lowerName.contains("conversation")) {
+                agentInfo.put("type", "conversational");
+            } else if (lowerName.contains("flow")) {
+                agentInfo.put("type", "flow");
+            } else {
+                agentInfo.put("type", "flow"); // Default
+            }
+        } else {
+            agentInfo.put("type", "flow"); // Default
         }
+
+        return agentInfo;
     }
 
     /**
@@ -461,6 +497,8 @@ public class MLCommonsClientAccessor {
 
     /**
      * Execute agent with provided parameters and return DSL query string.
+     * This is a placeholder method that will get agent info and route to appropriate execution method.
+     * Currently defaults to executeConversational for backward compatibility.
      *
      * @param agentId    the agent ID to execute
      * @param parameters the parameters to pass to the agent
@@ -471,10 +509,112 @@ public class MLCommonsClientAccessor {
         @NonNull final Map<String, String> parameters,
         @NonNull final ActionListener<String> listener
     ) {
-        retryableExecuteAgent(agentId, parameters, 0, listener);
+        // TODO: Implement proper agent type detection when MLAgentGetRequest becomes available
+        // For now, we'll try to get agent info and route accordingly
+        getAgent(agentId, ActionListener.wrap(agentInfo -> {
+            String agentType = determineAgentTypeFromResponse(agentInfo);
+            if ("flow".equals(agentType)) {
+                executeFlow(agentId, parameters, listener);
+            } else if ("conversational".equals(agentType)) {
+                executeConversational(agentId, parameters, listener);
+            } else {
+                // Default to conversational for now since most agents are conversational
+                executeConversational(agentId, parameters, listener);
+            }
+        }, e -> {
+            // If getAgent fails, default to conversational
+            log.warn("Failed to get agent info for [{}], defaulting to conversational execution: {}", agentId, e.getMessage());
+            executeConversational(agentId, parameters, listener);
+        }));
     }
 
-    private void retryableExecuteAgent(
+    /**
+     * Get agent information using the ML client.
+     * This method calls the ML client to get agent details.
+     *
+     * @param agentId  the agent ID to get
+     * @param listener the listener to be called with the agent information
+     */
+    public void getAgent(@NonNull final String agentId, @NonNull final ActionListener<Map<String, Object>> listener) {
+        retryableGetAgent(agentId, 0, listener);
+    }
+
+    /**
+     * Determine agent type from agent response JSON.
+     * This method parses the agent response to extract the type field.
+     *
+     * @param agentInfo the agent information map
+     * @return the agent type ("flow" or "conversational")
+     */
+    private String determineAgentTypeFromResponse(Map<String, Object> agentInfo) {
+        if (agentInfo == null) {
+            return "flow"; // Default to flow for backward compatibility
+        }
+
+        // Check for the type field in the agent response
+        Object typeObj = agentInfo.get("type");
+        if (typeObj instanceof String) {
+            String type = (String) typeObj;
+            if ("conversational".equals(type) || "conversation".equals(type)) {
+                return "conversational";
+            }
+            if ("flow".equals(type)) {
+                return "flow";
+            }
+        }
+
+        // Check name for type indicators as fallback
+        Object nameObj = agentInfo.get("name");
+        if (nameObj instanceof String) {
+            String name = ((String) nameObj).toLowerCase();
+            if (name.contains("conversational") || name.contains("conversation")) {
+                return "conversational";
+            }
+            if (name.contains("flow")) {
+                return "flow";
+            }
+        }
+
+        // Default to flow for backward compatibility
+        return "flow";
+    }
+
+    /**
+     * Execute flow-type agent with simple processing.
+     * This method handles agents that return simple DSL queries directly.
+     * Use this for agents that don't need complex JSON parsing.
+     *
+     * @param agentId    the agent ID to execute
+     * @param parameters the parameters to pass to the agent
+     * @param listener   the listener to be called with the DSL query result
+     */
+    public void executeFlow(
+        @NonNull final String agentId,
+        @NonNull final Map<String, String> parameters,
+        @NonNull final ActionListener<String> listener
+    ) {
+        retryableExecuteFlow(agentId, parameters, 0, listener);
+    }
+
+    /**
+     * Execute conversational-type agent with complex parsing logic.
+     * This method handles agents that return complex JSON responses with multiple fields.
+     * It parses the response to extract the query field and handles various response formats.
+     * Use this for conversational agents that return structured JSON responses.
+     *
+     * @param agentId    the agent ID to execute
+     * @param parameters the parameters to pass to the agent
+     * @param listener   the listener to be called with the DSL query result
+     */
+    public void executeConversational(
+        @NonNull final String agentId,
+        @NonNull final Map<String, String> parameters,
+        @NonNull final ActionListener<String> listener
+    ) {
+        retryableExecuteConversational(agentId, parameters, 0, listener);
+    }
+
+    private void retryableExecuteFlow(
         final String agentId,
         final Map<String, String> parameters,
         final int retryTime,
@@ -496,9 +636,339 @@ public class MLCommonsClientAccessor {
             e -> RetryUtil.handleRetryOrFailure(
                 e,
                 retryTime,
-                () -> retryableExecuteAgent(agentId, parameters, retryTime + 1, listener),
+                () -> retryableExecuteFlow(agentId, parameters, retryTime + 1, listener),
                 listener
             )
         ));
+    }
+
+    private void retryableExecuteConversational(
+        final String agentId,
+        final Map<String, String> parameters,
+        final int retryTime,
+        final ActionListener<String> listener
+    ) {
+        // Log parameters sent to agent
+        log.info("=== SENDING PARAMETERS TO AGENT ===");
+        log.info("Agent ID: [{}]", agentId);
+        log.info("Parameters: [{}]", parameters);
+        log.info("=== END PARAMETERS ===");
+
+        RemoteInferenceInputDataSet dataset = RemoteInferenceInputDataSet.builder().parameters(parameters).build();
+        AgentMLInput agentMLInput = new AgentMLInput(agentId, null, FunctionName.AGENT, dataset);
+        mlClient.execute(FunctionName.AGENT, agentMLInput, ActionListener.wrap(response -> {
+            try {
+                ModelTensorOutput output = (ModelTensorOutput) response.getOutput();
+                if (output == null) {
+                    throw new IllegalStateException("Null response from agent");
+                }
+
+                // Extract the response from the ModelTensorOutput
+                String agentResponse = extractResponseFromOutput(output);
+                if (agentResponse == null) {
+                    throw new IllegalStateException("No response found in agent output");
+                }
+
+                // Parse the agent response - handle both JSON and plain string responses
+                String generatedQuery = parseConversationalResponse(agentResponse);
+                listener.onResponse(generatedQuery);
+            } catch (Exception e) {
+                listener.onFailure(new IllegalStateException("Failed to process conversational agent response", e));
+            }
+        },
+            e -> RetryUtil.handleRetryOrFailure(
+                e,
+                retryTime,
+                () -> retryableExecuteConversational(agentId, parameters, retryTime + 1, listener),
+                listener
+            )
+        ));
+    }
+
+    /**
+     * Extract response from ModelTensorOutput for conversational agents.
+     * This method handles the complex response extraction logic.
+     *
+     * @param output the ModelTensorOutput from the agent
+     * @return the extracted response string
+     */
+    private String extractResponseFromOutput(ModelTensorOutput output) {
+        if (output == null || output.getMlModelOutputs() == null || output.getMlModelOutputs().isEmpty()) {
+            return null;
+        }
+
+        for (ModelTensors tensors : output.getMlModelOutputs()) {
+            if (tensors.getMlModelTensors() != null) {
+                for (ModelTensor tensor : tensors.getMlModelTensors()) {
+                    if ("response".equals(tensor.getName())) {
+                        Map<String, ?> dataMap = tensor.getDataAsMap();
+                        if (dataMap != null && dataMap.containsKey("response")) {
+                            return (String) dataMap.get("response");
+                        }
+                        return tensor.getResult();
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse conversational agent response to extract the generated query.
+     * This method handles the complex JSON parsing logic from the processor.
+     *
+     * @param agentResponse the raw response from the conversational agent
+     * @return the extracted query string
+     */
+    private String parseConversationalResponse(String agentResponse) {
+        if (agentResponse == null || agentResponse.trim().isEmpty()) {
+            throw new IllegalStateException("Empty agent response");
+        }
+
+        log.info("=== PARSING CONVERSATIONAL AGENT RESPONSE ===");
+        log.info("Attempting to parse: [{}]", agentResponse);
+
+        String generatedQuery = null;
+        String stepsByAgent = null;
+
+        // First, try to parse as JSON
+        try {
+            BytesReference bytes = new BytesArray(agentResponse);
+            try (XContentParser parser = XContentType.JSON.xContent().createParser(xContentRegistry, null, bytes.streamInput())) {
+                if (parser.currentToken() == null) {
+                    parser.nextToken();
+                }
+
+                log.info("Parser current token: [{}]", parser.currentToken());
+
+                if (parser.currentToken() == XContentParser.Token.START_ARRAY) {
+                    // Top-level is an array, pick the first element
+                    log.info("Top-level response is an array. Parsing first element.");
+                    if (parser.nextToken() == XContentParser.Token.START_OBJECT) {
+                        // Parse first object in array
+                        while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
+                            String fieldName = parser.currentName();
+                            parser.nextToken();
+
+                            log.info("[ARRAY] Found field: [{}] with token: [{}]", fieldName, parser.currentToken());
+
+                            if ("dsl_query".equals(fieldName)) {
+                                if (parser.currentToken() == XContentParser.Token.START_OBJECT) {
+                                    generatedQuery = readCurrentObjectAsString(parser);
+                                    log.info("[ARRAY] Extracted dsl_query object JSON");
+                                } else {
+                                    String queryString = parser.text();
+                                    generatedQuery = queryString;
+                                    log.info("[ARRAY] Extracted dsl_query string");
+                                }
+                            } else if ("agent_steps_summary".equals(fieldName)
+                                || "agent_summary".equals(fieldName)
+                                || "steps_by_agent".equals(fieldName)) {
+                                    stepsByAgent = parser.currentToken() == XContentParser.Token.VALUE_STRING ? parser.text() : null;
+                                    log.info("[ARRAY] Extracted steps summary field: [{}]", stepsByAgent);
+                                } else if ("generated_query".equals(fieldName) || "query".equals(fieldName)) {
+                                    // Fallback fields
+                                    if (parser.currentToken() == XContentParser.Token.START_OBJECT) {
+                                        generatedQuery = readCurrentObjectAsString(parser);
+                                    } else {
+                                        generatedQuery = parser.text();
+                                    }
+                                } else {
+                                    parser.skipChildren();
+                                }
+                        }
+                    }
+
+                    // consume remaining array tokens if any
+                    while (parser.currentToken() != XContentParser.Token.END_ARRAY
+                        && parser.nextToken() != XContentParser.Token.END_ARRAY) {
+                        parser.skipChildren();
+                    }
+                } else if (parser.currentToken() == XContentParser.Token.START_OBJECT) {
+                    // It's a JSON object, parse it
+                    while (parser.nextToken() != XContentParser.Token.END_OBJECT) {
+                        String fieldName = parser.currentName();
+                        parser.nextToken();
+
+                        log.info("Found field: [{}] with token: [{}]", fieldName, parser.currentToken());
+
+                        if ("dsl_query".equals(fieldName)) {
+                            if (parser.currentToken() == XContentParser.Token.START_OBJECT) {
+                                generatedQuery = readCurrentObjectAsString(parser);
+                                log.info("Extracted dsl_query object JSON");
+                            } else {
+                                String queryString = parser.text();
+                                // Try to validate JSON, else keep as-is
+                                try {
+                                    BytesReference queryBytes = new BytesArray(queryString);
+                                    try (
+                                        XContentParser queryParser = XContentType.JSON.xContent()
+                                            .createParser(xContentRegistry, null, queryBytes.streamInput())
+                                    ) {
+                                        if (queryParser.nextToken() != null) {
+                                            generatedQuery = queryString;
+                                            log.info("DSL query field contains valid JSON string");
+                                        }
+                                    }
+                                } catch (Exception queryParseException) {
+                                    log.warn(
+                                        "DSL query field string is not valid JSON, using raw string: [{}]",
+                                        queryParseException.getMessage()
+                                    );
+                                    generatedQuery = queryString;
+                                }
+                            }
+                        } else if ("query".equals(fieldName)) {
+                            String queryString = parser.text();
+                            log.info("Found query field: [{}]", queryString);
+
+                            // The query field contains escaped JSON, so we need to parse it again
+                            try {
+                                BytesReference queryBytes = new BytesArray(queryString);
+                                try (
+                                    XContentParser queryParser = XContentType.JSON.xContent()
+                                        .createParser(xContentRegistry, null, queryBytes.streamInput())
+                                ) {
+                                    // Validate that it's valid JSON
+                                    if (queryParser.nextToken() != null) {
+                                        generatedQuery = queryString; // Use the original string for SearchSourceBuilder parsing
+                                        log.info("Query field contains valid JSON: [{}]", generatedQuery);
+                                    }
+                                }
+                            } catch (Exception queryParseException) {
+                                log.warn("Query field is not valid JSON, treating as plain string: [{}]", queryParseException.getMessage());
+                                generatedQuery = queryString;
+                            }
+                        } else if ("agent_steps_summary".equals(fieldName)) {
+                            stepsByAgent = parser.text();
+                            log.info("Found agent_steps_summary field: [{}]", stepsByAgent);
+                        } else if ("agent_summary".equals(fieldName)) {
+                            stepsByAgent = parser.text();
+                            log.info("Found agent_summary field: [{}]", stepsByAgent);
+                        } else if ("generated_query".equals(fieldName)) {
+                            String queryString = parser.text();
+                            log.info("Found generated_query field: [{}]", queryString);
+
+                            // Handle escaped JSON in generated_query field as well
+                            try {
+                                BytesReference queryBytes = new BytesArray(queryString);
+                                try (
+                                    XContentParser queryParser = XContentType.JSON.xContent()
+                                        .createParser(xContentRegistry, null, queryBytes.streamInput())
+                                ) {
+                                    if (queryParser.nextToken() != null) {
+                                        generatedQuery = queryString;
+                                        log.info("Generated query field contains valid JSON: [{}]", generatedQuery);
+                                    }
+                                }
+                            } catch (Exception queryParseException) {
+                                log.warn(
+                                    "Generated query field is not valid JSON, treating as plain string: [{}]",
+                                    queryParseException.getMessage()
+                                );
+                                generatedQuery = queryString;
+                            }
+                        } else if ("steps_by_agent".equals(fieldName)) {
+                            stepsByAgent = parser.text();
+                            log.info("Found steps_by_agent field: [{}]", stepsByAgent);
+                        } else {
+                            log.info("Skipping unknown field: [{}]", fieldName);
+                            parser.skipChildren();
+                        }
+                    }
+                } else if (parser.currentToken() == XContentParser.Token.VALUE_STRING) {
+                    // It's a string - try to parse it as JSON directly
+                    String stringValue = parser.text();
+                    log.info("Found string response: [{}]", stringValue);
+
+                    // Try to parse the string as JSON
+                    try {
+                        BytesReference jsonBytes = new BytesArray(stringValue);
+                        try (
+                            XContentParser jsonParser = XContentType.JSON.xContent()
+                                .createParser(xContentRegistry, null, jsonBytes.streamInput())
+                        ) {
+                            if (jsonParser.currentToken() == null) {
+                                jsonParser.nextToken();
+                            }
+
+                            log.info("String parser current token: [{}]", jsonParser.currentToken());
+
+                            if (jsonParser.currentToken() == XContentParser.Token.START_OBJECT) {
+                                // The string contains a JSON object, parse it
+                                log.info("String contains JSON object, parsing...");
+                                while (jsonParser.nextToken() != XContentParser.Token.END_OBJECT) {
+                                    String fieldName = jsonParser.currentName();
+                                    jsonParser.nextToken();
+
+                                    log.info("Found JSON string field: [{}] with token: [{}]", fieldName, jsonParser.currentToken());
+
+                                    if ("dsl_query".equals(fieldName)) {
+                                        generatedQuery = jsonParser.text();
+                                        log.info("Found dsl_query field in JSON string: [{}]", generatedQuery);
+                                    } else if ("query".equals(fieldName)) {
+                                        generatedQuery = jsonParser.text();
+                                        log.info("Found query field in JSON string: [{}]", generatedQuery);
+                                    } else if ("agent_steps_summary".equals(fieldName)) {
+                                        stepsByAgent = jsonParser.text();
+                                        log.info("Found agent_steps_summary field in JSON string: [{}]", stepsByAgent);
+                                    } else if ("agent_summary".equals(fieldName)) {
+                                        stepsByAgent = jsonParser.text();
+                                        log.info("Found agent_summary field in JSON string: [{}]", stepsByAgent);
+                                    } else if ("generated_query".equals(fieldName)) {
+                                        generatedQuery = jsonParser.text();
+                                        log.info("Found generated_query field in JSON string: [{}]", generatedQuery);
+                                    } else if ("steps_by_agent".equals(fieldName)) {
+                                        stepsByAgent = jsonParser.text();
+                                        log.info("Found steps_by_agent field in JSON string: [{}]", stepsByAgent);
+                                    } else {
+                                        log.info("Skipping unknown field in JSON string: [{}]", fieldName);
+                                        jsonParser.skipChildren();
+                                    }
+                                }
+                            } else {
+                                // The string doesn't contain a JSON object, treat it as a plain string
+                                log.info("String does not contain JSON object, treating as plain string");
+                                generatedQuery = stringValue;
+                            }
+                        }
+                    } catch (Exception jsonStringParseException) {
+                        log.info("Failed to parse string as JSON, treating as plain string: [{}]", jsonStringParseException.getMessage());
+                        // If JSON string parsing fails, treat the entire response as a plain string
+                        generatedQuery = stringValue;
+                    }
+                }
+            }
+        } catch (Exception jsonParseException) {
+            log.info("Failed to parse as JSON, treating as plain string: [{}]", jsonParseException.getMessage());
+            // If JSON parsing fails, treat the entire response as a plain string
+            generatedQuery = agentResponse;
+            log.info("Using entire response as generated query: [{}]", generatedQuery);
+        }
+
+        // Validate that we got the generated query
+        if (generatedQuery == null || generatedQuery.trim().isEmpty()) {
+            throw new IllegalStateException("No generated query found in conversational agent response");
+        }
+
+        log.info("=== EXTRACTED VALUES ===");
+        log.info("Generated query: [{}]", generatedQuery);
+        log.info("Steps by agent: [{}]", stepsByAgent);
+        log.info("=== END EXTRACTED VALUES ===");
+
+        // Log the extracted DSL query at info level for easy monitoring
+        log.info("=== EXTRACTED DSL QUERY ===");
+        log.info("DSL Query: [{}]", generatedQuery);
+        log.info("=== END DSL QUERY ===");
+
+        return generatedQuery;
+    }
+
+    private String readCurrentObjectAsString(final XContentParser parser) throws Exception {
+        // parser is currently at START_OBJECT; copy the full object to builder
+        XContentBuilder builder = XContentBuilder.builder(XContentType.JSON.xContent());
+        builder.copyCurrentStructure(parser);
+        return BytesReference.bytes(builder).utf8ToString();
     }
 }

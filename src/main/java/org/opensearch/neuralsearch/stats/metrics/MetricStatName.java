@@ -20,10 +20,10 @@ import java.util.stream.Collectors;
  */
 @Getter
 public enum MetricStatName implements StatName {
-    MEMORY_SPARSE_MEMORY_USAGE("sparse_memory_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_3_0),
-    MEMORY_SPARSE_MEMORY_USAGE_PERCENTAGE("sparse_memory_usage_percentage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_3_0),
-    MEMORY_SPARSE_FORWARD_INDEX_USAGE("forward_index_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_3_0),
-    MEMORY_SPARSE_CLUSTERED_POSTING_USAGE("clustered_posting_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_3_0);
+    MEMORY_SPARSE_MEMORY_USAGE("sparse_memory_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_2_0),
+    MEMORY_SPARSE_MEMORY_USAGE_PERCENTAGE("sparse_memory_usage_percentage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_2_0),
+    MEMORY_SPARSE_FORWARD_INDEX_USAGE("forward_index_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_2_0),
+    MEMORY_SPARSE_CLUSTERED_POSTING_USAGE("clustered_posting_usage", "memory.sparse", MetricStatType.MEMORY, Version.V_3_2_0);
 
     private final String nameString;
     private final String path;

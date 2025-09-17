@@ -36,7 +36,7 @@ public class MetricStatNameTests extends OpenSearchTestCase {
 
     public void test_version() {
         Version version = MetricStatName.MEMORY_SPARSE_MEMORY_USAGE.getVersion();
-        assertEquals(Version.V_3_3_0, version);
+        assertEquals(Version.V_3_2_0, version);
     }
 
     public void test_uniquePaths() {
