@@ -722,6 +722,7 @@ public class MLCommonsClientAccessor {
             String agentStepsSummary = null;
 
             String memoryId = null;
+            String selectedIndex = null;
             if (type == MLAgentType.FLOW) {
                 dslQuery = extractFlowAgentResult(mlOutput);
             } else if (type == MLAgentType.CONVERSATIONAL) {
@@ -729,9 +730,10 @@ public class MLCommonsClientAccessor {
                 dslQuery = conversationalResult.get(DSL_QUERY_FIELD_NAME);
                 agentStepsSummary = conversationalResult.get(AGENT_STEPS_FIELD_NAME);
                 memoryId = conversationalResult.get(MEMORY_ID_FIELD_NAME);
+                selectedIndex = conversationalResult.get("selected_index");
             }
 
-            listener.onResponse(new AgentExecutionDTO(removeTrailingDecimalZeros(dslQuery), agentStepsSummary, memoryId));
+            listener.onResponse(new AgentExecutionDTO(removeTrailingDecimalZeros(dslQuery), agentStepsSummary, memoryId, selectedIndex));
         }, e -> RetryUtil.handleRetryOrFailure(e, retryTime, () -> {
             try {
                 retryableExecuteAgent(request, agenticQuery, agentId, agentInfo, xContentRegistry, retryTime + 1, listener);
@@ -849,6 +851,15 @@ public class MLCommonsClientAccessor {
                         if (dslQueryObj != null) {
                             String dslJson = gson.toJson(dslQueryObj);
                             result.put(DSL_QUERY_FIELD_NAME, dslJson);
+                        }
+
+                        // extract selected Index
+                        Object indexNameObj = modelResponseMap.get("index_name");
+                        if (indexNameObj != null) {
+                            String selectedIndex = indexNameObj.toString();
+                            if (!selectedIndex.isBlank()) {
+                                result.put("selected_index", selectedIndex);
+                            }
                         }
 
                         // Extract agent steps based on model type
